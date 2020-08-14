@@ -1,0 +1,77 @@
+name: Spot-MC
+
+on: 
+  workflow_dispatch:
+    inputs:
+      stop:
+        description: 'Stop (destroy)'
+      backup:
+        description: 'Backup now'
+      restore:
+        description: 'Restore to specified date from backup'
+      pause:
+        description: 'Pause (stop Minecraft server but do not desctroy)'
+      play:
+        description: 'Play (start stopped Minecraft server)'
+      scan:
+        description: 'Scan regoins for best price'
+
+jobs:
+  depoy:
+    runs-on: ubuntu-20.04
+    env:
+      ANSIBLE_STDOUT_CALLBACK: debug
+      PY_COLORS: '1'
+      ANSIBLE_FORCE_COLOR: '1'
+      SSH_KEY: ${{ secrets.ssh_key }}
+      CREDENTIALS: aws_access_key=${{ secrets.aws_access_key }} aws_secret_key=${{ secrets.aws_secret_key }} domain_name=${{ secrets.domain_name }} anondns_token=${{ secrets.anondns_token }} spot_mc_password=${{ secrets.spot_mc_password }}
+      RESTORE: restore=${{ github.event.inputs.restore }}
+      STOP: stop=${{ github.event.inputs.stop }}
+      BACKUP: backup=${{ github.event.inputs.backup }}
+      PAUSE: pause=${{ github.event.inputs.pause }}
+      PLAY: play=${{ github.event.inputs.play }}
+    steps:
+
+    - uses: actions/checkout@v2
+
+    - name: Prepare ssh key
+      run: echo "$SSH_KEY" > id_rsa && chmod 600 id_rsa && ssh-keygen -y -f id_rsa > id_rsa.pub
+      if: ${{ env.SSH_KEY }}
+
+    - name: Install Ansile reqirements
+      run: ansible-galaxy install -r galaxy_requirements.yml && ls -alh
+
+    - name: Start
+      run: ansible-playbook playbook.yaml --extra-vars "$CREDENTIALS"
+      if: ${{ !github.event.inputs.stop && !github.event.inputs.backup && !github.event.inputs.pause && !github.event.inputs.play && !github.event.inputs.scan }}
+
+    - name: Stop
+      run: ansible-playbook playbook-playpause.yaml --extra-vars "$CREDENTIALS $STOP"
+      if: ${{ github.event.inputs.stop }}
+
+    - name: Backup
+      run: ansible-playbook playbook-playpause.yaml --extra-vars "$CREDENTIALS $BACKUP"
+      if: ${{ github.event.inputs.backup }}
+
+    - name: Restore
+      run: ansible-playbook playbook.yaml --extra-vars "$CREDENTIALS $RESTORE"
+      if: ${{ github.event.inputs.restore }}
+
+    - name: Pause
+      run: ansible-playbook playbook-playpause.yaml --extra-vars "$CREDENTIALS $PAUSE"
+      if: ${{ github.event.inputs.pause }}
+
+    - name: Play
+      run: ansible-playbook playbook-playpause.yaml --extra-vars "$CREDENTIALS $PLAY"
+      if: ${{ github.event.inputs.play }}
+
+    - name: Scan
+      run: ansible-playbook playbook-region.yaml --extra-vars "$CREDENTIALS"
+      if: github.event.inputs.scan
+
+    - uses: actions/upload-artifact@v2
+      with:
+        name: ssh-key
+        path: |
+          id_rsa
+          id_rsa.pub
