@@ -1,0 +1,24 @@
+region: eu-north-1
+instance_type: c5d.large
+price_gap_percentage: 0
+timezone: Europe/Moscow
+backup_every_minutes: 20
+backup_full_every: 1W
+backup_remove_older: 2W
+mc_config: |
+  EULA: "true"
+  OVERRIDE_SERVER_PROPERTIES: "true"
+  TYPE: "PAPER"
+  VERSION: "1.16.1"
+  ENABLE_AUTOPAUSE: "false"
+  DIFFICULTY: "easy"
+  WHITELIST: "MrDelfer"
+  OPS: "MrDelfer"
+  BROADCAST_RCON_TO_OPS: "true"
+  FORCE_GAMEMODE: "true"
+  SNOOPER_ENABLED: "false"
+  VIEW_DISTANCE: "32"
+  MODE: "survival"
+  ONLINE_MODE: "FALSE"
+  MEMORY: "2500m"
+  USE_AIKAR_FLAGS: "true"

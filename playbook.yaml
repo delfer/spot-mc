@@ -1,0 +1,328 @@
+#########################
+###     Run local     ###
+#########################
+
+- hosts: localhost
+  vars_files:
+    - vars.yaml
+
+  tasks:
+
+  - name: Generate new SSH-key if not present
+    openssh_keypair:
+      path: "{{ playbook_dir }}/id_rsa"
+
+  - pip:
+      name:
+        - boto
+        - boto3
+
+  - name: Get bid for spot instance
+    script: get-spot-price.py --aws_access_key "{{ aws_access_key }}" --aws_secret_key "{{ aws_secret_key }}" --region {{ region }} --instance_type {{ instance_type }} --price_gap_percentage {{ price_gap_percentage }}
+    register: price
+
+  - debug:
+      msg:
+      - "Spot price will be : {{ price.stdout }}"
+
+  - set_fact:
+      aws_connection_info: &aws_connection_info
+        region: "{{ region }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+    no_log: yes
+
+  - name: s3 bucket for backups
+    s3_bucket:
+      <<: *aws_connection_info
+      name: "{{ domain_name }}"
+
+  - name: find AMI
+    ec2_ami_info:
+      <<: *aws_connection_info
+      owners: 679593333241 # aws-marketplace
+      filters:
+        architecture: "x86_64"
+        root-device-type: "ebs"
+        name: "ubuntu-minimal/images/hvm-ssd/ubuntu-focal-20.04-amd64-minimal-*"
+        virtualization-type: "hvm"
+    register: amis
+
+  - name: now get the latest one
+    set_fact:
+      ami: "{{ amis.images | sort(attribute='creation_date') | last }}"
+
+  - debug:
+      msg:
+      - "Will use latest AMI: {{ ami.name }}"
+
+  - ec2_key:
+      <<: *aws_connection_info
+      name: "{{ domain_name }}"
+      key_material: "{{ lookup('file', '{{playbook_dir}}/id_rsa.pub') }}"
+
+  - ec2_vpc_net:
+      <<: *aws_connection_info
+      name: "{{ domain_name }}"
+      cidr_block: 10.10.0.0/16
+    register: vpc
+
+  - ec2_vpc_igw:
+      <<: *aws_connection_info
+      vpc_id: "{{ vpc.vpc.id }}"
+      tags:
+        Name: "{{ domain_name }}"
+    register: igw
+
+  - ec2_group:
+      <<: *aws_connection_info
+      name: "{{ domain_name }}"
+      description: an example2 EC2 group
+      vpc_id: "{{ vpc.vpc.id }}"
+      rules:
+        - proto: tcp
+          ports:
+            - 21 # FTP
+            - 22 # SSH
+            - 4326-4327 # RCON Web Console
+            - 8000 # Portainer
+            - 9000 # Portainer
+            - 25565 # Minecraft
+            - 21000-21010 # FTP Active
+          cidr_ip: 0.0.0.0/0
+        - proto: icmp # ping
+          from_port: -1
+          to_port:  -1
+          cidr_ip: 0.0.0.0/0
+
+  - ec2_vpc_subnet:
+      <<: *aws_connection_info
+      vpc_id: "{{ vpc.vpc.id }}"
+      tags:
+        Name: "{{ domain_name }}"
+      cidr: 10.10.10.0/24
+    register: subnet
+
+  - ec2_vpc_route_table:
+      <<: *aws_connection_info
+      vpc_id: "{{ vpc.vpc.id }}"
+      tags:
+        Name: "{{ domain_name }}"
+      subnets:
+        - "{{ subnet.subnet.id }}"
+      routes:
+        - dest: 0.0.0.0/0
+          gateway_id: "{{ igw.gateway_id }}"
+
+  - ec2_instance_info:
+      <<: *aws_connection_info
+      filters:
+        "tag:Name": "{{ domain_name }}"
+        "instance-state-name": running
+    changed_when: False
+    register: instance
+
+  - set_fact:
+      mc_spot_instance: "{{ instance['instances'][0] }}"
+    when: instance['instances'] | length > 0
+
+  - ec2:
+      # region: "{{ best_region.item }}"
+      ec2_url: "https://ec2.{{ region }}.amazonaws.com"
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      id: "{{ domain_name }}"
+      instance_ids: "{{ instance['instances'][0] is defined | ternary(instance['instances'][0].instance_id,domain_name) }}"
+      instance_tags:
+        Name: "{{ domain_name }}"
+      spot_price: "{{ price.stdout | float }}"
+      spot_wait_timeout: 600
+      keypair: "{{ domain_name }}"
+      group: "{{ domain_name }}"
+      instance_type: "{{ instance_type }}"
+      image: "{{ ami.image_id }}"
+      wait: yes
+      vpc_subnet_id: "{{ subnet.subnet.id }}"
+      assign_public_ip: yes
+      instance_initiated_shutdown_behavior: terminate
+    register: instance
+    when: (instance['instances'] | length == 0)
+
+  - set_fact:
+      mc_spot_instance: "{{ instance['instances'][0] }}"
+    when: instance['skipped'] is defined == False
+
+  - add_host:
+      name: "{{ mc_spot_instance.public_dns_name }}"
+      ansible_ssh_user: ubuntu
+      ansible_ssh_private_key_file: id_rsa
+      ansible_ssh_extra_args: '-o StrictHostKeyChecking=no'
+      ansible_become: yes
+      ansible_become_user: root
+      ansible_become_method: sudo
+
+#########################
+### Run on rmote host ###
+#########################
+
+- hosts: all
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+
+  - wait_for_connection:
+      timeout: 600
+
+  - name: Update anondns.net
+    uri:
+      url: https://anondns.net/api/set/{{ domain_name }}/{{ anondns_token }}
+    register: anondns
+    when: anondns_token is defined
+
+  - name: Run "apt-get update" and install pip, duplicity
+    apt:
+      update_cache: yes
+      pkg:
+        - python3-pip
+        - duplicity
+        - cron
+
+  - pip:
+      name:
+        - docker-compose
+        - boto
+
+  - stat: path=/dev/nvme1n1
+    register: nvme
+
+  - name: Make filesystem on NVMe
+    filesystem:
+      fstype: xfs
+      dev: /dev/nvme1n1
+      opts: -n ftype=1
+    when: (nvme.stat.isblk is defined) and (nvme.stat.isblk)
+
+  - name: Mount NVMe and add to fstab and create mountpoint
+    mount:
+      state: mounted
+      path: /var/lib/docker
+      src: /dev/nvme1n1
+      fstype: xfs
+    when: (nvme.stat.isblk is defined) and (nvme.stat.isblk)
+
+  - name: Set timezone
+    timezone:
+      name: "{{ timezone }}"
+
+#########################
+### Apply Docker role ###
+#########################
+
+- hosts: all
+  roles:
+    - role: geerlingguy.docker
+      vars:
+        docker_users:
+          - ubuntu
+
+#########################
+### Install MC server ###
+#########################
+
+- hosts: all
+  vars_files:
+    - vars.yaml
+
+  tasks:
+  
+    - name: Prepare Spot-MC directory
+      file:
+        path: /var/lib/docker/spot-mc
+        state: directory
+
+    - set_fact:
+        restore_flags: ""
+
+    - set_fact:
+        restore_flags: "--force --restore-time {{ restore }}"
+      when: restore is defined
+
+    - name: Restore latest backup from s3
+      shell: |
+        AWS_ACCESS_KEY_ID={{ aws_access_key }} \
+        AWS_SECRET_ACCESS_KEY={{ aws_secret_key }} \
+        /usr/bin/duplicity --no-encryption -v8 \
+        restore {{ restore_flags }} \
+        s3://s3.{{ region }}.amazonaws.com:443/{{ domain_name }} /var/lib/docker/spot-mc/data
+      ignore_errors: yes
+      register: rest
+
+    - name: Prepare Spot-MC data directories
+      file:
+        path: /var/lib/docker/spot-mc/data
+        state: directory
+
+    - name: Cretae backup script
+      copy:
+        content: |
+          #!/usr/bin/env bash
+          export AWS_ACCESS_KEY_ID={{ aws_access_key }}
+          export AWS_SECRET_ACCESS_KEY={{ aws_secret_key }}
+
+          /usr/bin/flock -n /var/lock/spot-mc-backup.lock \
+          /usr/bin/duplicity --no-encryption -v4 \
+          --full-if-older-than {{ backup_full_every }} \
+          --exclude-other-filesystems \
+          --allow-source-mismatch \
+          /var/lib/docker/spot-mc/data s3://s3.{{ region }}.amazonaws.com/{{ domain_name }}
+
+          duplicity remove-older-than {{ backup_remove_older }} s3://s3.{{ region }}.amazonaws.com/{{ domain_name }}
+        dest: /var/lib/docker/spot-mc/backup.sh
+        mode: u+rx
+
+    - name: Cretae backup on termination script
+      copy:
+        content: |
+          #!/bin/bash
+
+          while sleep 3; do
+            if [ -z $(curl -Isf http://169.254.169.254/latest/meta-data/spot/termination-time) ]; then
+              logger "[spot-termination-handler.sh]: spot instance termination notice not detected"
+              /bin/false
+            else
+              logger "[spot-termination-handler.sh]: spot instance termination notice activated"
+              logger "[spot-termination-handler.sh]: stopping Minecraft container"
+              /usr/bin/docker stop mc
+              logger "[spot-termination-handler.sh]: making backup"
+              /var/lib/docker/spot-mc/backup.sh
+              logger "[spot-termination-handler.sh]: backup done"
+              logger "[spot-termination-handler.sh]: putting myself to sleep..."
+              sleep 120
+            fi
+          done
+        dest: /var/lib/docker/spot-mc/spot-termination-handler.sh
+        mode: u+rx
+
+    - name: start spot-termination-handler
+      shell: nohup /usr/bin/flock -n /var/lock/spot-termination-handler.lock /var/lib/docker/spot-mc/spot-termination-handler.sh </dev/null >/dev/null 2>&1 &
+
+    - name: Add backup job to Cron
+      cron:
+        name: "spot-mc backup"
+        minute: "*/{{ backup_every_minutes }}"
+        job: /var/lib/docker/spot-mc/backup.sh
+
+    - name: Set password for Portainer
+      copy:
+        content: "{{ spot_mc_password }}"
+        dest: /var/lib/docker/spot-mc/portainer-password
+
+    - name: Template docker-compose
+      template:
+        src: docker-compose.j2
+        dest: /var/lib/docker/spot-mc/docker-compose.yaml
+
+    - name: Run `docker-compose up`
+      docker_compose:
+        project_src: /var/lib/docker/spot-mc

@@ -1,0 +1,84 @@
+#########################
+###     Run local     ###
+#########################
+
+- hosts: localhost
+  vars_files:
+    - vars.yaml
+  tasks:
+
+  - pip:
+      name:
+        - boto
+        - boto3
+
+  - ec2_instance_info:
+      region: "{{ region }}"
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      filters:
+        "tag:Name": "{{ domain_name }}"
+        "instance-state-name": running
+    changed_when: False
+    register: instance
+
+  - name: Check SSH-key exists
+    stat:
+      path: "{{ playbook_dir }}/id_rsa"
+    register: stat_rsa_result
+
+  - add_host:
+      name: "{{ instance['instances'][0].public_dns_name }}"
+      ansible_ssh_user: ubuntu
+      ansible_ssh_private_key_file: id_rsa
+      ansible_ssh_extra_args: '-o StrictHostKeyChecking=no'
+      ansible_become: yes
+      ansible_become_user: root
+      ansible_become_method: sudo
+    when: (stat_rsa_result.stat.exists) or not (stop is defined)
+
+############################
+### Start/Stop MC server ###
+############################
+
+- hosts: all
+  vars_files:
+    - vars.yaml
+
+  tasks:
+    - set_fact:
+        stopped: no
+
+    - set_fact:
+        stopped: yes
+      when: (pause is defined) or (stop is defined)
+
+    - name: Start/stop Minecraft container
+      docker_compose:
+        project_src: /var/lib/docker/spot-mc
+        services: mc
+        stopped: "{{ stopped }}"
+
+    - name: Backup
+      shell: /var/lib/docker/spot-mc/backup.sh
+      when: (backup is defined) or (stop is defined)
+
+#########################
+###     Run local     ###
+#########################
+
+- hosts: localhost
+  vars_files:
+    - vars.yaml
+  tasks:
+
+  - ec2:
+      # region: "{{ best_region.item }}"
+      ec2_url: "https://ec2.{{ region }}.amazonaws.com"
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      instance_ids: "{{ instance['instances'][0] is defined | ternary(instance['instances'][0].instance_id,'spot-mc')}}"
+      state: absent
+      instance_tags:
+        Name: spot-mc
+    when: stop is defined

@@ -1,0 +1,63 @@
+version: '3.7'
+
+services:
+
+  mc:
+    container_name: mc
+    image: itzg/minecraft-server
+    restart: always
+    environment:
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: "{{ spot_mc_password }}"
+      RCON_PORT: 25575
+{{ mc_config | indent(6, true) }}
+    ports:
+      - "25565:25565"
+    volumes:
+      - /etc/timezone:/etc/timezone:ro
+      - /var/lib/docker/spot-mc/data:/data
+
+  rcon:
+    container_name: rcon
+    image: itzg/rcon
+    restart: always
+    environment:
+      RWA_USERNAME: "admin"
+      RWA_PASSWORD: "{{ spot_mc_password }}"
+      RWA_RCON_HOST: "mc"
+      RWA_RCON_PASSWORD: "{{ spot_mc_password }}"
+    ports:
+      - "4326:4326"
+      - "4327:4327"
+    volumes:
+      - "rcon:/opt/rcon-web-admin/db"
+
+  ftp:
+    container_name: ftp
+    image: delfer/alpine-ftp-server
+    restart: always
+    environment:
+      USERS: admin|{{ spot_mc_password }}|/data|1000
+      ADDRESS: {{ domain_name }}
+    ports:
+      - "21:21"
+      - "21000-21010:21000-21010"
+    volumes:
+      - /var/lib/docker/spot-mc/data:/data
+
+  portainer:
+    container_name: portainer
+    image: portainer/portainer
+    command: -H unix:///var/run/docker.sock --admin-password-file /pass
+    restart: always
+    ports:
+      - 9000:9000
+      - 8000:8000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+      - /var/lib/docker/spot-mc/portainer-password:/pass
+
+volumes:
+  rcon:
+  portainer_data:

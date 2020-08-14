@@ -1,0 +1,28 @@
+#########################
+###     Run local     ###
+#########################
+
+- hosts: localhost
+  vars_files:
+    - vars.yaml
+    - regions.yaml
+
+  tasks:
+  - pip:
+      name: boto3
+
+  - name: Get bid for spot instance
+    script: get-spot-price.py --aws_access_key "{{ aws_access_key }}" --aws_secret_key "{{ aws_secret_key }}" --region "{{ item[0] }}" --instance_type {{ item[1] }} --price_gap_percentage {{ price_gap_percentage }}
+    register: prices
+    with_nested:
+      - "{{ regions }}"
+      - "{{ instance_types }}"
+
+  - name: Sort list
+    set_fact:
+     sorted_prices: "{{ prices['results'] | selectattr('stdout', 'ne', '-1\n') | sort(attribute='stdout') }}"
+
+  - debug:
+      msg: "{% for result in sorted_prices %}\
+          {{ result.stdout_lines[0] }} - {{ result.item }}\n
+        {% endfor %}"
