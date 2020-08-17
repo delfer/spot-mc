@@ -43,7 +43,7 @@ jobs:
 
     - name: Start
       run: ansible-playbook playbook.yaml --extra-vars "$CREDENTIALS"
-      if: ${{ !github.event.inputs.stop && !github.event.inputs.backup && !github.event.inputs.pause && !github.event.inputs.play && !github.event.inputs.scan }}
+      if: ${{ !github.event.inputs.stop && !github.event.inputs.backup && !github.event.inputs.pause && !github.event.inputs.play && !github.event.inputs.scan && !github.event.inputs.restore }}
 
     - name: Stop
       run: ansible-playbook playbook-playpause.yaml --extra-vars "$CREDENTIALS $STOP"
