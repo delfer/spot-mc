@@ -248,6 +248,13 @@
         restore_flags: "--force --restore-time {{ restore }}"
       when: restore is defined
 
+    - name: Stop Minecraft container
+      docker_compose:
+        project_src: /var/lib/docker/spot-mc
+        services: mc
+        stopped: yes
+      when: restore is defined
+      
     - name: Restore latest backup from s3
       shell: |
         AWS_ACCESS_KEY_ID={{ aws_access_key }} \
@@ -257,6 +264,13 @@
         s3://s3.{{ region }}.amazonaws.com:443/{{ domain_name }} /var/lib/docker/spot-mc/data
       ignore_errors: yes
       register: rest
+      
+    - name: Start Minecraft container
+      docker_compose:
+        project_src: /var/lib/docker/spot-mc
+        services: mc
+        stopped: no
+      when: restore is defined
 
     - name: Prepare Spot-MC data directories
       file:
