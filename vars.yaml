@@ -2,9 +2,9 @@ region: eu-north-1
 instance_type: c5d.large
 price_gap_percentage: 0
 timezone: Europe/Moscow
-backup_every_minutes: 20
-backup_full_every: 1W
-backup_remove_older: 2W
+backup_every_minutes: 10
+backup_full_every: 3D
+backup_remove_older: 1W
 mc_config: |
   EULA: "true"
   OVERRIDE_SERVER_PROPERTIES: "true"
